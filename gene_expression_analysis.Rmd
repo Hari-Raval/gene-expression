@@ -1,0 +1,490 @@
+---
+title: "Figure 1a-e (and supplementary Figure) Code"
+author: "Hari Raval"
+date: "12/6/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require("knitr")
+opts_knit$set(root.dir = "~/Desktop/QCB:MOL:COS 455/Final Project")
+
+library("data.table")
+library(edgeR)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+library(BiocVersion)
+library(readxl)
+library(tidyverse)
+library(matrixStats)
+library(DESeq)
+library("scatterplot3d")
+library(DiagrammeR)
+```
+
+
+# Figure 1A Code
+
+```{r}
+
+ grViz("
+
+  digraph {
+   # avoid distortion
+  graph [layout = dot, rankdir = LR]
+
+  node [shape = oval,
+        fontname = Helvetica,
+        fixedsize = true,
+        width = 1]
+        his3;leu2;ura3;met15
+
+  node [shape = circle,
+        fillcolor = gray,
+        fontname = Helvetica,
+        fixedsize = true,
+        width = 1, 
+        style = filled]
+        Prototroph;M;H;L;U;HM;LM;UM;HL;HU;LU;HLM;HUM;LUM;HLU;HLUM  
+
+  #invisible nodes
+  node [shape = circle,
+        fixedsize = true,
+        width = 0.25,
+        color = white,
+        fontcolor = white
+        fillcolor = white]
+        f;g;h;i
+
+  # define the labels
+  edge [color = blue, arrowhead = normal]
+  met15 -> i
+  ura3 ->  h
+  leu2 ->  g
+  his3 -> f
+  
+  # define the labels
+  edge [color = white, style = invisible]
+  i -> HUM ->LUM -> HLU -> HLUM
+  h -> HL -> HU -> LU -> HLM
+  g -> U -> HM -> LM -> UM
+  f -> Prototroph ->M -> H -> L
+  }
+  ")
+
+
+```
+
+
+# Figure 1B Code
+```{r}
+
+mrna <- read_excel("41564_2016_BFnmicrobiol201530_MOESM200_ESM.xlsx",
+                   sheet = "Transcriptome data")
+
+epistatic_scores_data <- read_excel("41564_2016_BFnmicrobiol201530_MOESM200_ESM.xlsx",
+                    sheet = "Epistatic scores, transcriptome")
+ 
+ # perform filtering on transcriptome data to only include mrna
+ mrna_genes <- epistatic_scores_data$`Systematic Name`
+ mrna <- mrna[mrna$Unique_ID %in% mrna_genes,]
+ 
+ # remove genes with < 50 read counts
+tokeep = rep(FALSE,nrow(mrna))
+for (i in 1:nrow(mrna)) {
+   for (j in 6:length(mrna)) {
+      if (mrna[i,j] >= 50) {
+        tokeep[i] = TRUE
+        break
+      }
+   }
+}
+
+# remove maximum outlier points before creating 3D scatter plots
+mrna <-  mrna[tokeep,]
+ uncorrected <- c()
+
+# differntial expression analysis on mrna data ONLY
+for (i in 1:15) {
+  x <- cbind(mrna[,(3+3*i):(3+3*i+2)], mrna[,(3+3*16):(3+3*16+2)])
+  
+  group <- factor(c(1, 1, 1, 2, 2, 2))
+  rownames(x) <- unlist(mrna[,1])
+  y <- DGEList(counts=x,group=group)
+  keep <- filterByExpr(y) # might be able to get rid of this
+  y <- y[keep,,keep.lib.sizes=FALSE]
+  y <- calcNormFactors(y)
+  design <- model.matrix(~group)
+  y <- estimateDisp(y,design)
+  
+  fit <- glmFit(y,design)
+  lrt <- glmLRT(fit,coef=2)
+  
+  # fit <- glmQLFit(y,design)
+  # qlf <- glmQLFTest(fit,coef=2)
+  pval <- lrt$table %>% dplyr::select("PValue")
+  
+  uncorrected <- c(uncorrected,lrt$table %>% dplyr::select("PValue"))
+  
+  pval$PValue <- p.adjust(pval$PValue, method = "BH", n = nrow(pval)) 
+  logfc <- lrt$table %>% dplyr::select("logFC")
+  to_accum <- cbind(unlist(rownames(pval)), pval$PValue, logfc$logFC)
+  if (i == 1) accum <- to_accum
+  accum <- rbind(accum, to_accum) 
+}
+colnames(accum) <- c("gene", "pval", "logfc")
+
+significant <- filter(as.tibble(accum), pval < 0.05)
+significant <- filter(significant, (as.numeric(logfc) < -1) | (as.numeric(logfc) > 1))
+names_sig <- unique(significant$gene)
+
+hist(-log10(unlist(uncorrected)))
+
+a <- as.numeric(accum[,"logfc"])
+a[a > 5] <- 5
+a[a < -5] <- -5
+b <- as.numeric(accum[,"pval"])
+
+volcano_plot_data <- data.frame(a,-log10(b))
+volcano_plot_data <- volcano_plot_data %>% rename(log_fc = a, expression_change = X.log10.b.)
+
+highlighted_data <- volcano_plot_data %>% filter((expression_change > -log(0.05,10) & log_fc > 1 ) | (expression_change > -log(0.05,10) & log_fc < -1 ))
+
+# find the data to highlight for the volcano plot
+volcano_plot_data <- volcano_plot_data[!(volcano_plot_data$log_fc %in% highlighted_data$log_fc),]
+
+# add in visual settings for the volcano plot and 
+volcano <- ggplot(volcano_plot_data, aes(x = -log_fc, y = (expression_change + 1))) + geom_point(color = "gray") + geom_point(data = highlighted_data, aes(x = -log_fc, y = expression_change),color= 'black') + coord_trans(y="log2") + ylim(1,280) + xlab("mRNA expression Change, log2(fold change)") + ylab("mRNA expression Change,-Log10(adjusted P value)") + theme_classic() + scale_y_continuous(breaks=c(0,2,4,6,8,10,20,50,320))
+
+png(file = "figure1b.png",width = 600, height = 350)
+volcano
+plot
+dev.off()
+
+# unmodified volcano plots below for raw data (uncolored and colored)
+
+#plot(-a,-log10(b), pch = 20) 
+
+# plot(unlist(logfc), -log10(pval$PValue), pch = 20, main = "Preliminary Figure 1b", xlab = "mRNA expression Change, log2(fold change) ",ylab ="mRNA expression Change,-Log10(adjusted P value)", col = ifelse((pval$PValue > -log(0.05, 10) & logfc < 1) | (pval$PValue >-log(0.05, 10) & logfc > -1)   , "gray", "black"))
+
+```
+
+# Figure 1C Code
+
+```{r}
+suppressPackageStartupMessages(library(ClassDiscovery))
+library(proDA)
+
+# removed filtering of genes with < 50 counts to maintain consistency with paper
+
+# tokeep = rep(FALSE,nrow(mrna))
+# for (i in 1:nrow(mrna)) {
+#    for (j in 6:length(mrna)) {
+#       if (mrna[i,j] >= 50) {
+#         tokeep[i] = TRUE
+#         break
+#       }
+# } 
+# }
+# mrna = mrna[tokeep,]
+
+mrna <- read_excel("41564_2016_BFnmicrobiol201530_MOESM200_ESM.xlsx",
+                   sheet = "Transcriptome data")
+
+mrna_specific_data <- read_excel("41564_2016_BFnmicrobiol201530_MOESM200_ESM.xlsx",
+                    sheet = "Epistatic scores, transcriptome")
+ 
+# FILTERING TRANSCRIPTOME TO ONLY INCLUDE MRNA VALUE
+mrna_genes <- mrna_specific_data$`Systematic Name`
+mrna <- mrna[mrna$Unique_ID %in% mrna_genes,]
+ 
+# compute medians of each triplicate
+mrna_matrix <-  as.matrix(rowMedians(as.matrix(mrna[,6:8]))) 
+for (i in 1:15) {
+  mrna_matrix = cbind(mrna_matrix, c(rowMedians(as.matrix(mrna[,(6+3*i):(8+3*i)]))))
+}
+
+# compute counts per million prior to running clustering
+g <- c(1:16)
+mrna_matrix <-  DGEList(counts = mrna_matrix, group = g)
+mrna_matrix <- cpm(mrna_matrix)
+
+colnames(mrna_matrix) = c("HLUM", "HLM","HUM","LUM" ,"HLU" ,"HM","LM", "UM", "HL","HU","LU", "M","H", "L", "U", "Prototroph")
+
+# perform hierarchical clustering with euclidean distance and 
+# complete linkage agglomeration 
+
+euclid_dist = distanceMatrix(mrna_matrix, "euclidean")
+hclust_avg = hclust(euclid_dist, method = "complete")
+hclust_dend = as.dendrogram(hclust_avg)
+
+
+png(file = "figure1c.png",width = 600, height = 350)
+plot(hclust_dend) + title(sub="Hierarchical clustering of mRNA expression profiles", ylab="Tree height")
+dev.off()
+
+
+```
+
+# Figure 1D Code
+
+```{r}
+
+mrna <- read_excel("41564_2016_BFnmicrobiol201530_MOESM200_ESM.xlsx",
+                   sheet = "Transcriptome data")
+
+# perform differential expression analysis on the WHOLE transcriptome
+for (i in 1:15) {
+  x <- cbind(mrna[,(3+3*i):(3+3*i+2)], mrna[,(3+3*16):(3+3*16+2)])
+  group <- factor(c(1, 1, 1, 2, 2, 2))
+  rownames(x) <- unlist(mrna[,1])
+  y <- DGEList(counts=x,group=group)
+  # removed filtering to maintain as much consistency as possible with gene list in paper
+  # keep <- filterByExpr(y) 
+  # y <- y[keep,,keep.lib.sizes=FALSE]
+  y <- calcNormFactors(y)
+  design <- model.matrix(~group)
+  y <- estimateDisp(y,design)
+  # fit <- glmFit(y,design)
+  # lrt <- glmLRT(fit,coef=2)
+  fit <- glmQLFit(y,design)
+  qlf <- glmQLFTest(fit,coef=2)
+  pval <- qlf$table %>% dplyr::select("PValue")
+  pval$PValue <- p.adjust(pval$PValue, method = "BH", n = nrow(pval)) 
+  logfc <- qlf$table %>% dplyr::select("logFC")
+  to_accum <- cbind(unlist(rownames(pval)), pval$PValue, logfc$logFC)
+  if (i == 1) accum <- to_accum
+  accum <- rbind(accum, to_accum) 
+}
+colnames(accum) <- c("gene", "pval", "logfc")
+
+# extract the most significant genes
+significant <- filter(as.tibble(accum), pval < 0.05)
+significant <- filter(significant, (as.numeric(logfc) < -1) | (as.numeric(logfc) > 1))
+names_sig <- unique(significant$gene)
+
+# extract and format the significant expressed gene names to use in the following tool: 
+# https://www.yeastgenome.org/goSlimMapper tool
+
+# create a dataframe of the significant genes to process
+names_sig <- data.frame(names_sig)
+mrna_significant <- mrna[mrna$Unique_ID %in% names_sig$names_sig,]
+significant_gene_names <- unique(mrna_significant$Gene)
+
+# write the results to file to import into online goSlimMapper tool
+write(significant_gene_names, "diff_expressed_genes.txt")
+
+# a.) produce a pie chart of the GO SLIM process results 
+go_results_process <- read.table("go_slim_process_analysis.txt", sep="\t", header=TRUE)
+
+top_15_go_slim_process_results <- go_results_process[1:15,]
+top_15_go_slim_process_results <- top_15_go_slim_process_results[order(top_15_go_slim_process_results$NUM_LIST_ANNOTATIONS),]
+
+# create a data frame of go results for SLIM process
+go_results_plot_1 <- data.frame(
+  group=top_15_go_slim_process_results$TERM,
+  value=top_15_go_slim_process_results$NUM_LIST_ANNOTATIONS)
+
+go_results_plot_1$group <- factor(go_results_plot_1$group, levels = rev(as.character(go_results_plot_1$group)))
+
+basic_plot_1d <- ggplot(go_results_plot_1, aes(x = "", y=value, fill = group)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  coord_polar("y", start = -250) 
+
+advanced_plot_1d <- basic_plot_1d + theme_void() + guides(fill = guide_legend(reverse = FALSE)) + labs(fill = "Enriched Gene Ontology (GO) Terms") + ggtitle("Top 15 Enriched Gene Ontology (GO): \n Process Slim Mapper ") + scale_fill_manual(values=c("#003333", "#006666", "#009999", "#00CCCC", "#00FFFF", "#99FFFF","#CCFFFF", "#CCE5FF", "#99CCFF", "#66B2FF", "#0080FF", "#0066CC","#004C99", "#003366", "#000066" ))
+
+png(file = "figure1d_1.png",width = 600, height = 350)
+advanced_plot_1d
+dev.off()
+
+# b.) produce a pie chart of the GO SLIM function results 
+go_results_function <- read.table("go_slim_function_analysis.txt", sep="\t", header=TRUE)
+
+top_15_go_slim_function_results <- go_results_function[1:15,]
+top_15_go_slim_function_results <- top_15_go_slim_function_results[order(top_15_go_slim_function_results$NUM_LIST_ANNOTATIONS),]
+
+# create a data frame of go results for SLIM function
+go_results_plot_2 <- data.frame(
+  group=top_15_go_slim_function_results$TERM,
+  value=top_15_go_slim_function_results$NUM_LIST_ANNOTATIONS)
+
+go_results_plot_2$group <- factor(go_results_plot_2$group, levels = rev(as.character(go_results_plot_2$group)))
+
+basic_plot_2d <- ggplot(go_results_plot_2, aes(x = "", y=value, fill = group)) +
+  geom_bar(width = 2, stat = "identity", color = "white") +
+  coord_polar("y", start = -250)
+
+advanced_plot_2d <- basic_plot_2d + theme_void() + guides(fill = guide_legend(reverse = FALSE)) + labs(fill = "Enriched Gene Ontology (GO) Terms") + ggtitle("Top 15 Enriched Gene Ontology (GO):\n Function Slim Mapper ") + scale_fill_manual(values=c("#660000", "#990000", "#CC0000", "#FF0000", "#FF6666", "#FF9999","#FFCCCC", "#FFCCE5", "#FF99CC", "#FF66B2", "#FF3399", "#FF007F","#CC0066", "#99004C", "#4A0016" )) 
+
+png(file = "figure1d_2.png",width = 600, height = 350)
+advanced_plot_2d
+dev.off()
+```
+
+# Figure 1E Code
+
+```{r}
+# load the previously published microarray data
+array_express_data <- read_excel("41564_2016_BFnmicrobiol201530_MOESM199_ESM.xlsx",
+                   sheet = "Fig 1e")
+number_micro_array_experiments <- 49
+experiment_number <- c(1:number_micro_array_experiments)
+
+# order the data according to number of differentially expressed genes to plot in order
+array_express_diff_expressed <- data.frame(experiment_number, array_express_data$`% Overlapping genes`, array_express_data$`# Differentially expressed genes`)
+
+array_express_diff_expressed <- array_express_diff_expressed[order(array_express_diff_expressed$array_express_data....Differentially.expressed.genes.),]
+
+colnames(array_express_diff_expressed) <- c("exp_number", "overlap_genes", "diff_expressed_genes")
+
+fig_e_bar_plot <- ggplot(data=array_express_diff_expressed, aes(x=experiment_number, y=overlap_genes)) +
+  geom_bar(stat="identity", width=1) + geom_bar(colour="black", stat="identity", fill = "gray") + xlab("Knockout transcriptomes recorded in auxotrophic backrounds \n (sorted by the total number of differentially expressed mRNAs)") + ylab("Differentially expressed mRNAs overlapping \n with auxotrophic marker transcriptomes (%)") + theme_classic()
+
+png(file = "figure1e_1.png",width = 600, height = 350)
+fig_e_bar_plot
+dev.off()
+
+# compute the average gene overlap to find overlap between all transcripts
+average_gene_overlap <- sum(array_express_diff_expressed$overlap_genes) / number_micro_array_experiments
+
+# Plot first inset (pie chart 1)
+group_pie_1 <- array_express_diff_expressed$overlap_genes
+labels_pie_1 <- c("Average overlap to all transcripts:")
+pct <- round(sum(group_pie_1) / length(group_pie_1))
+labels_pie_1 <- paste(labels_pie_1, pct) # add percents to labels
+labels_pie_1 <- paste(labels_pie_1,"%",sep="") # ad % to labels
+fig_e_pie_1 <- pie(c(pct,100 - pct),labels = labels_pie_1,
+                   init.angle=30, col = c("black", "gray"))
+
+fig_e_pie_1
+
+# set the appropriate subset of data to find average overlap between 1 marker at a time
+array_subset_diff_expressed <- array_express_data[-c(5,15:21,25,28:31,37:40,46:47,49),][,3:5]
+colnames(array_subset_diff_expressed) <- c("exp_number", "overlap_genes", "diff_expressed_genes")
+average_gene_overlap_single_marker <- sum(array_subset_diff_expressed$overlap_genes) / number_micro_array_experiments
+
+# Plot second inset (pie chart 2)
+group_pie_2 <- array_subset_diff_expressed$overlap_genes
+labels_pie_2 <- c("Average overlap to strains differing \n        by 1 marker at a time:")
+pct_2 <- round(sum(group_pie_2) / number_micro_array_experiments)
+labels_pie_2 <- paste(labels_pie_2, pct_2) # add percents to labels
+labels_pie_2 <- paste(labels_pie_2,"%",sep="") # ad % to labels
+fig_e_pie_2 <- pie(c(pct_2,100 - pct_2),labels = labels_pie_2,
+                   init.angle=55, col = c("black", "gray"))
+
+fig_e_pie_2
+
+```
+
+# Supplementary Figure S2
+```{r, warning = FALSE}
+
+# prepare to use whole transcriptome data to validate triplicates
+mrna <- read_excel("41564_2016_BFnmicrobiol201530_MOESM200_ESM.xlsx",
+                   sheet = "Transcriptome data")
+
+# following the methods section in the paper, discard RNAs with very low
+# read counts (< 50 across all replicates)
+tokeep = rep(FALSE,nrow(mrna))
+for (i in 1:nrow(mrna)) {
+   for (j in 6:length(mrna)) {
+      if (mrna[i,j] >= 50) {
+        tokeep[i] = TRUE
+        break
+      }
+   }
+}
+
+# remove maximum outlier points before creating 3D scatter plots
+mrna <-  mrna[tokeep,]
+
+mrna <- log(mrna[,6:ncol(mrna)])
+
+mrna <- mrna[order(mrna$HLUM...6),]
+
+mrna <- mrna[1:(nrow(mrna) -5),]
+
+# create plots of all strains of triplicates to verify consistency of trend
+par(mfrow=c(1,2), new = TRUE)
+scatterplot3d(mrna[,1:3], angle = 55,
+              xlab = expression(paste(Delta, HLUM)),
+              ylab = expression(paste(Delta, HLUM)),
+              zlab = expression(paste(Delta, HLUM)))
+scatterplot3d(mrna[,4:6], angle = 55,
+              xlab = expression(paste(Delta, HLM)),
+              ylab = expression(paste(Delta, HLM)),
+              zlab = expression(paste(Delta, HLM)))
+
+par(mfrow=c(1,2))
+scatterplot3d(mrna[,7:9], angle = 55,
+              xlab = expression(paste(Delta, HUM)),
+              ylab = expression(paste(Delta, HUM)),
+              zlab = expression(paste(Delta, HUM)))
+scatterplot3d(mrna[,10:12], angle = 55,
+              xlab = expression(paste(Delta, LUM)),
+              ylab = expression(paste(Delta, LUM)),
+              zlab = expression(paste(Delta, LUM)))
+
+par(mfrow=c(1,2))
+scatterplot3d(mrna[,13:15], angle = 55,
+              xlab = expression(paste(Delta, HLU)),
+              ylab = expression(paste(Delta, HLU)),
+              zlab = expression(paste(Delta, HLU)))
+scatterplot3d(mrna[,16:18], angle = 55,
+              xlab = expression(paste(Delta, HM)),
+              ylab = expression(paste(Delta, HM)),
+              zlab = expression(paste(Delta, HM)))
+
+par(mfrow=c(1,2))
+scatterplot3d(mrna[,19:21], angle = 55,
+              xlab = expression(paste(Delta, LM)),
+              ylab = expression(paste(Delta, LM)),
+              zlab = expression(paste(Delta, LM)))
+scatterplot3d(mrna[,22:24], angle = 55,
+              xlab = expression(paste(Delta, UM)),
+              ylab = expression(paste(Delta, UM)),
+              zlab = expression(paste(Delta, UM)))
+
+par(mfrow=c(1,2))
+scatterplot3d(mrna[,25:27], angle = 55,
+              xlab = expression(paste(Delta, HL)),
+              ylab = expression(paste(Delta, HL)),
+              zlab = expression(paste(Delta, HL)))
+scatterplot3d(mrna[,28:30], angle = 55,
+              xlab = expression(paste(Delta, HU)),
+              ylab = expression(paste(Delta, HU)),
+              zlab = expression(paste(Delta, HU)))
+
+par(mfrow=c(1,2))
+scatterplot3d(mrna[,31:33], angle = 55,
+              xlab = expression(paste(Delta, LU)),
+              ylab = expression(paste(Delta, LU)),
+              zlab = expression(paste(Delta, LU)))
+scatterplot3d(mrna[,34:36], angle = 55,
+              xlab = expression(paste(Delta, M)),
+              ylab = expression(paste(Delta, M)),
+              zlab = expression(paste(Delta, M)))
+
+par(mfrow=c(1,2))
+scatterplot3d(mrna[,37:39], angle = 55,
+              xlab = expression(paste(Delta, H)),
+              ylab = expression(paste(Delta, H)),
+              zlab = expression(paste(Delta, H)))
+scatterplot3d(mrna[,40:42], angle = 55,
+              xlab = expression(paste(Delta, L)),
+              ylab = expression(paste(Delta, L)),
+              zlab = expression(paste(Delta, L)))
+
+par(mfrow=c(1,2))
+scatterplot3d(mrna[,43:45], angle = 55,
+              xlab = expression(paste(Delta, U)),
+              ylab = expression(paste(Delta, U)),
+              zlab = expression(paste(Delta, U)))
+scatterplot3d(mrna[,46:48], angle = 55,
+              xlab = expression(paste(Delta, prototroph)),
+              ylab = expression(paste(Delta, prototroph)),
+              zlab = expression(paste(Delta, prototroph)))
+```
